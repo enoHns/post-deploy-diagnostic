@@ -1,0 +1,39 @@
+name: post-deploy-diagnostic-demo
+services:
+  app:
+    image: nginx:stable-alpine
+    volumes:
+      - ./lab/compose/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "127.0.0.1:18080:80"
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://127.0.0.1/health]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: demo
+      POSTGRES_PASSWORD: local-demo-only
+      POSTGRES_DB: demo
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U demo -d demo"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+  diagnostic:
+    image: post-deploy-diagnostic:1.0.1
+    build: .
+    profiles: [tools]
+    volumes:
+      - ./diagnostic.yml:/config/diagnostic.yml:ro
+      - ./examples:/examples:ro
+    command: [run, --config, /config/diagnostic.yml]

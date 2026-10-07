@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+# Linux CLI: explicit checks, bounded processes, stable CI exit codes.
+set -uo pipefail
+umask 077
+export LC_ALL=C
+
+ROOT=$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/.." && pwd)
+VERSION=$(cat "$ROOT/VERSION")
+
+usage() {
+    cat <<'USAGE'
+Usage:
+  diagnostic run [--config diagnostic.yml] [--format human|json]
+                 [--json-report PATH] [--junit-report PATH] [--timeout 30s]
+  diagnostic validate [--config diagnostic.yml]
+  diagnostic inspect [--updates]
+  diagnostic version
+
+Exit codes: 0 = all required checks passed; 1 = required check failed;
+            2 = invalid configuration, tooling error or interruption.
+Run requires Linux; use the Docker image on macOS/Windows.
+USAGE
+}
+
+fail() { printf 'Tool error: %s\n' "$*" >&2; exit 2; }
+command=${1:-help}
+[[ $# -eq 0 ]] || shift
+case "$command" in
+    help|-h|--help) usage; exit 0 ;;
+    version|--version) printf '%s\n' "$VERSION"; exit 0 ;;
+    run|validate|inspect) ;;
+    *) usage >&2; fail 'unknown command' ;;
+esac
+[[ $(uname -s) == Linux ]] || fail 'Linux is required. Run this tool through Docker on macOS/Windows.'
+if [[ "$command" == inspect ]]; then exec bash "$ROOT/lib/inspect.sh" "$@"; fi
+
+config=diagnostic.yml format=human json_report='' junit_report='' override=''
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --config|--format|--json-report|--junit-report|--timeout)
+            [[ $# -ge 2 && -n "$2" ]] || fail "missing value for $1"
+            case "$1" in
+                --config) config=$2 ;;
+                --format) format=$2 ;;
+                --json-report) json_report=$2 ;;
+                --junit-report) junit_report=$2 ;;
+                --timeout) override=$2 ;;
+            esac
+            shift 2 ;;
+        -h|--help) usage; exit 0 ;;
+        *) fail 'unknown argument' ;;
+    esac
+done
+[[ "$format" == human || "$format" == json ]] || fail '--format must be human or json'
+for dependency in node jq timeout date mktemp; do
+    command -v "$dependency" >/dev/null || fail "missing dependency: $dependency"
+done
+node -e 'if (Number(process.versions.node.split(".")[0]) < 22) process.exit(1); require.resolve("yaml", {paths: [process.argv[1]]})' "$ROOT" 2>/dev/null || fail 'Node.js 22+ and yaml are required; run npm ci --omit=dev --ignore-scripts in the tool directory'
+for output in "$json_report" "$junit_report"; do
+    if [[ -n "$output" ]]; then
+        [[ $(readlink -m -- "$output") != "$(readlink -m -- "$config")" && ! "$output" -ef "$config" ]] || fail 'a report path must not overwrite the configuration'
+    fi
+done
+if [[ -n "$json_report" && -n "$junit_report" ]]; then
+    [[ $(readlink -m -- "$json_report") != "$(readlink -m -- "$junit_report")" && ! "$json_report" -ef "$junit_report" ]] || fail 'JSON and JUnit report paths must differ'
+fi
+
+work=$(mktemp -d) || fail 'cannot create temporary directory'
+active='' interrupted=0
+# ShellCheck 0.9 does not follow these indirect trap calls.
+# shellcheck disable=SC2317
+cleanup() {
+    if [[ -n "$active" ]]; then kill -KILL -- "-$active" 2>/dev/null || true; fi
+    rm -rf -- "$work"
+}
+# shellcheck disable=SC2317
+interrupt() {
+    interrupted=1
+    if [[ -n "$active" ]]; then
+        kill -TERM -- "-$active" 2>/dev/null || true
+        sleep 0.2
+        kill -KILL -- "-$active" 2>/dev/null || true
+    fi
+}
+trap 'cleanup' EXIT
+trap 'interrupt' INT TERM
+node "$ROOT/lib/data.js" config "$config" > "$work/config.json" || exit 2
+if [[ -n "$override" ]]; then
+    millis=$(node "$ROOT/lib/data.js" duration "$override") || exit 2
+    jq --argjson ms "$millis" '.timeout_ms = $ms' "$work/config.json" > "$work/updated.json" || exit 2
+    mv "$work/updated.json" "$work/config.json"
+fi
+if [[ "$command" == validate ]]; then printf 'Configuration valid\n'; exit 0; fi
+
+while IFS= read -r kind; do
+    case "$kind" in
+        dns) dependency=dig ;;
+        tcp) dependency=nc ;;
+        http) dependency=curl ;;
+        tls) dependency=openssl ;;
+        ping) dependency=ping ;;
+        service) dependency=systemctl ;;
+    esac
+    command -v "$dependency" >/dev/null || fail "missing dependency for $kind: $dependency"
+done < <(jq -r '.checks[].type' "$work/config.json" | sort -u)
+
+count=$(jq '.checks | length' "$work/config.json")
+budget=$(jq '.timeout_ms' "$work/config.json")
+started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+start_ms=$(date +%s%3N)
+deadline=$((start_ms + budget))
+: > "$work/results.jsonl"
+for ((index=0; index<count; index++)); do
+    check_start=$(date +%s%3N)
+    remaining=$((deadline - check_start))
+    if ((interrupted || remaining <= 0)); then
+        status=failed code=GLOBAL_TIMEOUT message='Global timeout exceeded before this check'
+        if ((interrupted)); then status=error; code=INTERRUPTED; message='Diagnostic interrupted'; fi
+        jq -c --argjson i "$index" --arg status "$status" --arg code "$code" --arg message "$message" \
+            '.checks[$i:][] | {name,type,target,required,duration_ms:0,status:$status,error_code:$code,error:$message}' \
+            "$work/config.json" >> "$work/results.jsonl" || fail 'cannot collect pending results'
+        break
+    fi
+    check_limit=$(jq -r --argjson i "$index" '.checks[$i].timeout_ms' "$work/config.json")
+    timeout_code=CHECK_TIMEOUT
+    if ((remaining <= check_limit)); then check_limit=$remaining; timeout_code=GLOBAL_TIMEOUT; fi
+    outcome="$work/outcome.json"
+    : > "$outcome"
+    if ((interrupted)); then
+        printf '{"status":"error","error_code":"INTERRUPTED","error":"Diagnostic interrupted"}\n' > "$outcome"
+    elif ((remaining <= 0)); then
+        printf '{"status":"failed","error_code":"GLOBAL_TIMEOUT","error":"Global timeout exceeded before this check"}\n' > "$outcome"
+    else
+        printf -v seconds '%d.%03d' "$((check_limit / 1000))" "$((check_limit % 1000))"
+        timeout --signal=TERM --kill-after=0.2s "${seconds}s" bash "$ROOT/lib/check.sh" "$work/config.json" "$index" "$work" > "$outcome" 2> "$work/worker.err" &
+        active=$!
+        wait "$active"; rc=$?
+        if ((interrupted)); then
+            wait "$active" 2>/dev/null || true
+            printf '{"status":"error","error_code":"INTERRUPTED","error":"Diagnostic interrupted"}\n' > "$outcome"
+        elif [[ "$rc" == 124 || "$rc" == 137 ]]; then
+            jq -n --arg code "$timeout_code" '{status:"failed",error_code:$code,error:"Timeout exceeded",hints:["Check DNS, routes, firewall and service availability","Increase the timeout if this duration is expected"]}' > "$outcome"
+        elif [[ "$rc" != 0 ]] || ! jq -e '.status == "passed" or .status == "failed" or .status == "error"' "$outcome" >/dev/null 2>&1; then
+            printf '{"status":"error","error_code":"TOOL_ERROR","error":"Check command could not complete"}\n' > "$outcome"
+        fi
+        active=
+    fi
+    elapsed=$(( $(date +%s%3N) - check_start ))
+    jq -c --argjson i "$index" --argjson ms "$elapsed" --slurpfile outcome "$outcome" \
+        '.checks[$i] | {name,type,target,required,duration_ms:$ms} + $outcome[0]' "$work/config.json" >> "$work/results.jsonl" || fail 'cannot collect check result'
+done
+elapsed=$(( $(date +%s%3N) - start_ms ))
+node "$ROOT/lib/data.js" report "$work/config.json" "$work/results.jsonl" "$started" "$elapsed" "$interrupted" "$VERSION" "$format" "$json_report" "$junit_report"
+exit $?

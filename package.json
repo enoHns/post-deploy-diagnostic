@@ -1,0 +1,13 @@
+{
+  "name": "post-deploy-diagnostic",
+  "version": "1.0.1",
+  "private": true,
+  "description": "Linux diagnostics in Bash, YAML validation and reports in Node.js",
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "test": "bash scripts/test.sh",
+    "test:node": "node --test tests/*.test.js"
+  },
+  "dependencies": { "yaml": "2.9.1" }
+}

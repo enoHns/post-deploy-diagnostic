@@ -1,0 +1,27 @@
+service:
+  name: demo-api
+  environment: local
+
+global:
+  timeout: 30s
+
+checks:
+  - name: redis-dns
+    type: dns
+    host: redis
+    timeout: 3s
+  - name: redis
+    type: tcp
+    host: redis
+    port: 6379
+    required: true
+  - name: postgres
+    type: tcp
+    host: postgres
+    port: 5432
+    required: true
+  - name: application
+    type: http
+    url: http://app/health
+    expected_status: 200
+    required: true

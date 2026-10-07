@@ -1,0 +1,23 @@
+# Include from any project, then extend this hidden job.
+# The consuming project supplies the image registry/tag and deployment dependency.
+.post-deploy-diagnostic:
+  image:
+    name: $DIAGNOSTIC_IMAGE
+    entrypoint: [""]
+  variables:
+    DIAGNOSTIC_CONFIG: diagnostic.yml
+  before_script: []
+  after_script: []
+  services: []
+  dependencies: []
+  cache: []
+  allow_failure: false
+  script:
+    - diagnostic run --config "$DIAGNOSTIC_CONFIG" --json-report reports/diagnostic.json --junit-report reports/diagnostic.xml
+  artifacts:
+    when: always
+    expire_in: 14 days
+    paths:
+      - reports/
+    reports:
+      junit: reports/diagnostic.xml

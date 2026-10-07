@@ -1,0 +1,19 @@
+service:
+  name: controlled-failures
+  environment: local
+global:
+  timeout: 20s
+checks:
+  - name: invalid-dns
+    type: dns
+    host: nonexistent.invalid
+    timeout: 2s
+  - name: wrong-postgres-port
+    type: tcp
+    host: postgres
+    port: 5433
+    timeout: 2s
+  - name: http-500
+    type: http
+    url: http://app/failure
+    expected_status: 200

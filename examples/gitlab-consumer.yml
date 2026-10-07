@@ -1,0 +1,18 @@
+# Merge this into your application's .gitlab-ci.yml.
+# Replace platform/post-deploy-diagnostic, the registry URL and deploy_staging.
+include:
+  - project: platform/post-deploy-diagnostic
+    ref: v1.0.1
+    file: /templates/diagnostic.yml
+
+post_deploy_diagnostic:
+  extends: .post-deploy-diagnostic
+  stage: .post
+  variables:
+    DIAGNOSTIC_IMAGE: registry.gitlab.com/platform/post-deploy-diagnostic:1.0.1
+    DIAGNOSTIC_CONFIG: diagnostic.yml
+  needs:
+    - job: deploy_staging
+      artifacts: false
+  # Set tags to a runner with the staging routes and DNS, if needed:
+  # tags: [staging-network]

@@ -1,0 +1,9 @@
+/dist/
+/reports/
+/coverage/
+node_modules/
+*.pcap
+lab/vm/.state/
+/.cache/
+.DS_Store
+.env

@@ -1,0 +1,9 @@
+.git
+.cache
+dist
+reports
+coverage
+.env
+.DS_Store
+node_modules
+*.pcap

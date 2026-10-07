@@ -1,0 +1,42 @@
+stages: [test, package, publish]
+
+test:
+  stage: test
+  image: node:24-bookworm-slim
+  before_script:
+    - apt-get update
+    - apt-get install -y --no-install-recommends bash ca-certificates coreutils curl dnsutils iproute2 iputils-ping jq netcat-openbsd openssh-client openssl shellcheck libxml2-utils
+    - npm ci --ignore-scripts --no-audit --no-fund
+  script:
+    - bash scripts/test.sh
+
+package:
+  stage: package
+  image: debian:bookworm-slim
+  script:
+    - bash scripts/package.sh
+  artifacts:
+    paths: [dist/]
+    expire_in: 30 days
+
+# The publishing runner must support Docker-in-Docker with TLS and /certs/client.
+# Consumer pipelines only pull the finished image; they do not need DinD.
+publish_image:
+  stage: publish
+  image: docker:29-cli
+  services:
+    - name: docker:29-dind
+      alias: docker
+  variables:
+    DOCKER_HOST: tcp://docker:2376
+    DOCKER_TLS_CERTDIR: /certs
+    DOCKER_TLS_VERIFY: "1"
+    DOCKER_CERT_PATH: /certs/client
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/ && $CI_COMMIT_REF_PROTECTED == "true"'
+  before_script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login "$CI_REGISTRY" --username "$CI_REGISTRY_USER" --password-stdin
+  script:
+    - test "$CI_COMMIT_TAG" = "v$(cat VERSION)"
+    - docker buildx create --use
+    - docker buildx build --platform linux/amd64,linux/arm64 --tag "$CI_REGISTRY_IMAGE:$(cat VERSION)" --push .

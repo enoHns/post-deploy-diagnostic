@@ -1,0 +1,37 @@
+service:
+  name: linux-services-lab
+  environment: disposable-vm
+global:
+  timeout: 30s
+checks:
+  - name: local-dns
+    type: dns
+    host: demo.linux.test
+    server: 127.0.0.1
+    timeout: 2s
+  - name: nginx-port
+    type: tcp
+    host: 127.0.0.1
+    port: 8080
+  - name: nginx-health
+    type: http
+    url: http://127.0.0.1:8080/health
+  - name: apache-health
+    type: http
+    url: http://127.0.0.1:8081/health
+  - name: nginx-tls
+    type: tls
+    host: 127.0.0.1
+    port: 8443
+    server_name: demo.linux.test
+    ca_file: /etc/postdeploy-lab/tls.crt
+  - name: ssh-port
+    type: tcp
+    host: 127.0.0.1
+    port: 22
+  - name: nginx-service
+    type: service
+    unit: nginx
+  - name: syslog-service
+    type: service
+    unit: rsyslog

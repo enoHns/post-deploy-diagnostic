@@ -1,0 +1,29 @@
+service:
+  name: my-api
+  environment: staging
+global:
+  timeout: 30s
+checks:
+  - name: service-dns
+    type: dns
+    host: ${APP_HOST}
+  - name: redis
+    type: tcp
+    host: ${REDIS_HOST}
+    port: 6379
+  - name: postgres
+    type: tcp
+    host: ${POSTGRES_HOST}
+    port: 5432
+  - name: application
+    type: http
+    url: ${HEALTH_URL}
+    headers:
+      Authorization: Bearer ${HEALTH_TOKEN}
+    expected_status: 200
+    timeout: 5s
+  - name: tls
+    type: tls
+    host: ${APP_HOST}
+    port: 443
+    server_name: ${APP_HOST}
